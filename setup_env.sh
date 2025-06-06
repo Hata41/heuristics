@@ -54,7 +54,7 @@ fi
 
 
 # 3. Install QDax with constraint (within the created venv)
-QDaxExtras="" # Set to "" as per your last comment
+QDaxExtras="[cuda12]" # Set to "" as per your last comment
 echo -e "\n[Step 3/4] Installing qdax${QDaxExtras} with constraints into '${VENV_NAME}'..."
 # Use the VENV_PYTHON_EXE to be absolutely sure which python uv targets for the install
 uv pip install --python "${VENV_PYTHON_EXE}" "qdax${QDaxExtras}" --constraint https://raw.githubusercontent.com/adaptive-intelligent-robotics/QDax/main/requirements.txt
