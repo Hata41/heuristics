@@ -19,7 +19,7 @@ from qdax.utils.metrics import default_ga_metrics, default_qd_metrics
 
 """New"""
 from flax import linen as nn
-from nets import BinPackActor, BinPackTorso, BPActorHead, Obs_to_Arrays
+from qdax_binpack.neural_network.utils.nets import BinPackActor, BinPackTorso, BPActorHead, Obs_to_Arrays
 from behaviours import binpack_descriptor_extraction
 from tqdm import tqdm
 

@@ -23,7 +23,7 @@ from behaviours import binpack_descriptor_extraction, compute_heuristic_genome_d
 from tqdm import tqdm
 
 # Import from your new heuristic_policies.py
-from heuristic_policies import HeuristicPolicy, QDaxHeuristicPolicyAdapter, ArrayObservation
+from qdax_binpack.heuristic.utils.heuristic_policies import HeuristicPolicy, QDaxHeuristicPolicyAdapter, ArrayObservation
 # Import the converter
 from jumanji_conversion import observation_to_arrays as jumanji_obs_to_array_obs
 

@@ -1,2 +1,3 @@
-qdax --constraint https://raw.githubusercontent.com/adaptive-intelligent-robotics/QDax/main/requirements.txt
+qdax ##--constraint https://raw.githubusercontent.com/adaptive-intelligent-robotics/QDax/main/requirements.txt
 ipykernel
+tqdm

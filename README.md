@@ -48,7 +48,7 @@ With the virtual environment activated:
 
 *   **Evolve Neural Network Policies (Multi-Device):**
     ```bash
-    python run_qdax_multi_device.py
+    XLA_FLAGS="--xla_force_host_platform_device_count=8" python3 run_qdax_multi_device.py
     ```
 
 Refer to the scripts themselves for hyperparameter configurations.
