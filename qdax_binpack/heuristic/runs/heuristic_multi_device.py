@@ -19,18 +19,17 @@ from qdax.utils.metrics import default_qd_metrics, CSVLogger
 from flax import linen as nn
 # from nets import BinPackActor, BinPackTorso, BPActorHead, Obs_to_Arrays # We'll replace this
 # In run_qdax_multi_device.py
-from behaviours import binpack_descriptor_extraction, compute_heuristic_genome_descriptors
+from qdax_binpack.behaviours import binpack_descriptor_extraction, compute_heuristic_genome_descriptors
 from tqdm import tqdm
 
 # Import from your new heuristic_policies.py
 from qdax_binpack.heuristic.utils.heuristic_policies import HeuristicPolicy, QDaxHeuristicPolicyAdapter, ArrayObservation
-# Import the converter
-from jumanji_conversion import observation_to_arrays as jumanji_obs_to_array_obs
+from qdax_binpack.jumanji_conversion import observation_to_arrays as jumanji_obs_to_array_obs
 
 
 # Import the user's custom scoring function utility
 try:
-    from qdax_jumanji_utils import jumanji_scoring_function_eval_multiple_envs
+    from qdax_binpack.qdax_jumanji_utils import jumanji_scoring_function_eval_multiple_envs
 except ImportError:
     print("WARNING: qdax_jumanji_utils.py not found. Please ensure it's in your PYTHONPATH.")
     print("Using a placeholder function for jumanji_scoring_function_eval_multiple_envs.")

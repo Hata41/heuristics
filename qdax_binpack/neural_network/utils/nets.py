@@ -6,8 +6,7 @@ import chex
 from tensorflow_probability.substrates.jax.distributions import Categorical
 from qdax.core.neuroevolution.networks.networks import MLP
 from jumanji.environments.packing.bin_pack.types import Observation
-from jumanji_conversion import observation_to_arrays
-
+from qdax_binpack.jumanji_conversion import observation_to_arrays
 
 class TransformerBlock(nn.Module):
     """Transformer block with post layer norm, implementing Attention Is All You Need

@@ -20,7 +20,7 @@ from qdax.utils.metrics import default_ga_metrics, default_qd_metrics
 """New"""
 from flax import linen as nn
 from qdax_binpack.neural_network.utils.nets import BinPackActor, BinPackTorso, BPActorHead, Obs_to_Arrays
-from behaviours import binpack_descriptor_extraction
+from qdax_binpack.behaviours import binpack_descriptor_extraction
 from tqdm import tqdm
 
 ## Define Hyperparameters
@@ -160,7 +160,8 @@ descriptor_extraction_fn = functools.partial(
     num_item_choices_from_spec=NUM_ITEM_CHOICES # Pass the Python int
 )
 
-from qdax_jumanji_utils import jumanji_scoring_function_eval_multiple_envs # Import the new function
+from qdax_binpack.qdax_jumanji_utils import jumanji_scoring_function_eval_multiple_envs
+
 N_EVAL_ENVS = 1
 scoring_fn = functools.partial(
     jumanji_scoring_function_eval_multiple_envs,

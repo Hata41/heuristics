@@ -20,12 +20,12 @@ from qdax.utils.metrics import default_qd_metrics, CSVLogger
 """New"""
 from flax import linen as nn
 from qdax_binpack.neural_network.utils.nets import BinPackActor, BinPackTorso, BPActorHead, Obs_to_Arrays
-from behaviours import binpack_descriptor_extraction
+from qdax_binpack.behaviours import binpack_descriptor_extraction
 from tqdm import tqdm
 
 # Import the user's custom scoring function utility
 try:
-    from qdax_jumanji_utils import jumanji_scoring_function_eval_multiple_envs
+    from qdax_binpack.qdax_jumanji_utils import jumanji_scoring_function_eval_multiple_envs
 except ImportError:
     print("WARNING: qdax_jumanji_utils.py not found. Please ensure it's in your PYTHONPATH.")
     print("Using a placeholder function for jumanji_scoring_function_eval_multiple_envs.")
