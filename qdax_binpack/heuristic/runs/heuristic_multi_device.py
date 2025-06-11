@@ -1,6 +1,35 @@
+# --- VIRTUAL ENVIRONMENT ISOLATION PROLOGUE ---
+# This code should be at the VERY TOP of the script.
+import sys
+import os
+
+# Create a clean copy of the search path
+original_sys_path = list(sys.path)
+# Clear the existing search path
+sys.path.clear()
+
+# Identify the virtual environment's site-packages directory
+# This assumes the script is run from the project root or similar context.
+# A more robust way might be needed if run from weird locations, but this is good for Colab.
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
+venv_path = os.path.join(project_root, '.colab_venv') # Matches the venv name in the notebook
+venv_site_packages = os.path.join(venv_path, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
+
+# Add ONLY the venv's site-packages to the path
+sys.path.append(venv_site_packages)
+# Add the project root itself to handle the `qdax_binpack` import
+sys.path.append(project_root)
+
+# Restore other essential paths if they were not part of the venv, but be careful
+# For this purpose, usually just the venv and project root are enough.
+# The original path often contains global paths like '/usr/lib/python3.11' and '/usr/local/lib/python3.11/dist-packages'
+# which we want to AVOID.
+# --- END OF PROLOGUE ---
+
+
+
 import jumanji
 from typing import Tuple, Type, Dict, Any, List
-
 import jax
 import jax.numpy as jnp
 import functools
@@ -64,7 +93,7 @@ episode_length = 20 # Max steps for a full episode
 # For QDax loop (can be different from single episode test)
 qdax_batch_size_per_device = 1 # QDax emitter batch size per device
 qdax_total_batch_size = qdax_batch_size_per_device * num_devices
-num_total_iterations = 1000 # Target total algorithm iterations for QDax
+num_total_iterations = 100 # Target total algorithm iterations for QDax
 log_period = 1 # Iterations per compiled update_fn call
 num_update_calls = num_total_iterations // log_period
 
