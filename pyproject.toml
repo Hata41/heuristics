@@ -1,0 +1,9 @@
+[project]
+name = "qdax-binpack-heuristics"
+version = "0.1.0"
+description = "Evolving heuristic policies for Jumanji BinPack-v2 using QDax."
+requires-python = ">=3.11"
+
+# This tells packaging tools where to find your code
+[tool.setuptools]
+packages = ["qdax_binpack"]

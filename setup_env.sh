@@ -89,6 +89,17 @@ else
 fi
 echo "Other dependencies installed."
 
+# 5. Install the local project package in editable mode
+echo -e "\n[Step 5/5] Installing the 'qdax_binpack' project in editable mode..."
+uv pip install --python "${VENV_PYTHON_EXE}" -e .
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to install the project package in editable mode."
+    echo "Make sure you have a pyproject.toml file in the root directory."
+    exit 1
+fi
+echo "Project package installed."
+
+
 echo -e "\n--- Setup Complete ---"
 echo "Virtual environment '${VENV_NAME}' is ready with ${ACTUAL_VENV_PYTHON_VERSION}."
 echo "To activate it in your current shell session, run:"
