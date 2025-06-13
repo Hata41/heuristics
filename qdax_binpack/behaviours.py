@@ -1,4 +1,4 @@
-# behaviours.py
+# qdax_binpack/behaviours.py
 
 import jumanji
 # Using original Jumanji Observation types for the existing descriptor function
@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 
 from typing import Sequence, Tuple, Union, Optional
-from qdax.custom_types import Descriptor, Genotype # Added Genotype
+from qdax.custom_types import Descriptor, Genotype
 from qdax.core.neuroevolution.buffers.buffer import QDTransition
 
 
@@ -34,44 +34,67 @@ def _calculate_normalized_rank(chosen_value: chex.Numeric,
     return jnp.clip(score, 0.0, 1.0)
 
 
+# NEW: Updated function to handle both standard and extended (rotated) observations
 def _get_prioritization_scores_single_step(
-    obs: JumanjiObservation,  # Single Jumanji observation
-    flat_action: chex.Numeric, # Single flat action
-    num_item_choices_from_spec: int
+    obs: JumanjiObservation,
+    flat_action: chex.Numeric,
+    num_item_choices_from_spec: int, # This is the total number of item choices (e.g., O*I or I)
 ) -> Tuple[chex.Numeric, chex.Numeric]:
     """
     Calculates item and EMS prioritization scores for a single timestep.
-    (Original function - unchanged)
+    Handles both standard and extended (with rotations) observations.
     """
+    # item_idx_chosen is an index into the flattened item/orientation array
     item_idx_chosen = flat_action % num_item_choices_from_spec
     ems_idx_chosen = flat_action // num_item_choices_from_spec
 
-    # These expect Jumanji Pytree structures for obs.items and obs.ems
-    all_item_volumes = item_volume(obs.items)
+    # Conditionally flatten item-related parts of the Jumanji observation if they are multi-dimensional.
+    # This is a robust way to detect the extended environment with rotations.
+    is_extended_obs = obs.items.x_len.ndim > 1
+
+    def get_volumes_and_mask_for_extended():
+        # For extended env, obs.items leaves and obs.items_mask have shape (O, I).
+        # We flatten them to work with the flat item_idx_chosen.
+        flat_items = jax.tree_util.tree_map(lambda x: x.flatten(), obs.items)
+        flat_mask = obs.items_mask.flatten()
+        return item_volume(flat_items), flat_mask
+
+    def get_volumes_and_mask_for_standard():
+        # For standard env, shapes are already 1D: (I,).
+        return item_volume(obs.items), obs.items_mask
+
+    all_item_volumes, valid_item_selection_mask = jax.lax.cond(
+        is_extended_obs,
+        get_volumes_and_mask_for_extended,
+        get_volumes_and_mask_for_standard,
+    )
+    
+    # By this point, all_item_volumes and valid_item_selection_mask are 1D arrays,
+    # and item_idx_chosen is a valid scalar index for them.
     chosen_item_volume = all_item_volumes[item_idx_chosen]
-    valid_item_selection_mask = obs.items_mask # From Jumanji Observation
     item_prioritization_score = _calculate_normalized_rank(
         chosen_item_volume, all_item_volumes, valid_item_selection_mask
     )
 
-    all_ems_volumes = obs.ems.volume() # From Jumanji Observation
+    # EMS part is unchanged as it's not affected by item rotations.
+    all_ems_volumes = obs.ems.volume()
     chosen_ems_volume = all_ems_volumes[ems_idx_chosen]
-    valid_ems_selection_mask = obs.ems_mask # From Jumanji Observation
+    valid_ems_selection_mask = obs.ems_mask
     ems_prioritization_score = _calculate_normalized_rank(
         chosen_ems_volume, all_ems_volumes, valid_ems_selection_mask
     )
     return item_prioritization_score, ems_prioritization_score
 
-def binpack_descriptor_extraction( # Original name restored
-    data: QDTransition, # data.obs is expected to be JumanjiObservation by _get_prioritization_scores_single_step
+def binpack_descriptor_extraction( # Original name and signature restored
+    data: QDTransition, # data.obs is expected to be JumanjiObservation
     mask: jnp.ndarray,
-    num_item_choices_from_spec: int
+    num_item_choices_from_spec: int,
 ) -> Descriptor:
     """
     Computes descriptors based on episode activity:
     1. Average prioritization of large items.
     2. Average prioritization of large EMSs.
-    (Original function - unchanged)
+    (This function's body is unchanged as the logic is now handled in its helper)
     """
     vmapped_scores_over_time = jax.vmap(
         _get_prioritization_scores_single_step,
@@ -95,7 +118,8 @@ def binpack_descriptor_extraction( # Original name restored
     descriptors = jnp.stack([mean_item_prioritization, mean_ems_prioritization], axis=-1)
     return descriptors
 
-# --- NEW: Descriptor Function for Heuristic Genomes (Updated Slices) ---
+# --- NEW: Descriptor Function for Heuristic Genomes (Unchanged) ---
+# ... (The rest of the file is unchanged)
 # Based on the new feature_stack order in `heuristic_policies.py` (13 features total)
 # Interaction features: indices 0-4
 # Item features: indices 5-7

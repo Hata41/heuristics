@@ -1,3 +1,7 @@
+import os
+
+os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=16"
+
 import jumanji
 from typing import Tuple, Type, Dict, Any, List
 import jax
@@ -16,8 +20,6 @@ from qdax.utils.metrics import default_qd_metrics, CSVLogger
 
 """New"""
 from flax import linen as nn
-# from nets import BinPackActor, BinPackTorso, BPActorHead, Obs_to_Arrays # We'll replace this
-# In run_qdax_multi_device.py
 from qdax_binpack.behaviours import binpack_descriptor_extraction, compute_heuristic_genome_descriptors
 from tqdm import tqdm
 
@@ -54,7 +56,8 @@ print(f'Detected the following {num_devices} device(s): {devices}')
 
 # Choose Descriptors : 
 
-descriptor_type = "genome"
+# descriptor_type = "genome"
+descriptor_type = "proritization"
 
 
 ## Define Hyperparameters
@@ -63,20 +66,34 @@ episode_length = 20 # Max steps for a full episode
 # For QDax loop (can be different from single episode test)
 qdax_batch_size_per_device = 1 # QDax emitter batch size per device
 qdax_total_batch_size = qdax_batch_size_per_device * num_devices
-num_total_iterations = 100 # Target total algorithm iterations for QDax
+num_total_iterations = 1000 # Target total algorithm iterations for QDax
 log_period = 1 # Iterations per compiled update_fn call
 num_update_calls = num_total_iterations // log_period
 
 iso_sigma = 0.005 # For QDax emitter
 line_sigma = 0.05  # For QDax emitter
-N_EVAL_ENVS = 50   # For QDax scoring function
+N_EVAL_ENVS = 10   # For QDax scoring function
 
-## Instantiate the Jumanji environment & Policy
-env = jumanji.make('BinPack-v2')
+## Instantiate the Extended Jumanji environment 
+env = jumanji.make('Extended_BinPack-v0')
+
 key = jax.random.key(seed)
 key, subkey = jax.random.split(key)
 action_spec_val = env.action_spec()
-NUM_ITEM_CHOICES = action_spec_val.num_values[1].item()
+
+# NEW: Handle different action spaces between BinPack-v2 and Extended_BinPack-v0
+is_extended_env_with_rotation = len(action_spec_val.num_values) == 3
+
+if is_extended_env_with_rotation:
+    print(f"Running with Extended_BinPack-v0 (with rotations). Action spec: {action_spec_val.num_values}")
+    NUM_ORIENTATIONS = action_spec_val.num_values[0].item()
+    NUM_ITEMS_PER_ORIENTATION = action_spec_val.num_values[2].item()
+    # The total number of "item" choices for the policy's flattened output
+    TOTAL_ITEM_CHOICES = NUM_ORIENTATIONS * NUM_ITEMS_PER_ORIENTATION
+else:
+    print(f"Running with BinPack-v2. Action spec: {action_spec_val.num_values}")
+    # Original logic for BinPack-v2 or ExtendedBinPack without rotation
+    TOTAL_ITEM_CHOICES = action_spec_val.num_values[1].item()
 
 # --- Instantiate Heuristic Policy for QDax ---
 heuristic_policy_logic = HeuristicPolicy() # Default featurizer and application logic
@@ -93,12 +110,26 @@ def play_step_fn(env_state, timestep, policy_params, key): # policy_params will 
     flat_action_probs = policy_network.apply(policy_params, timestep.observation)
 
     # Action selection (e.g., argmax or sampling)
-    # key_action, key = jax.random.split(key) # If sampling
-    # flat_action_idx = jax.random.categorical(key_action, logits=jnp.log(flat_action_probs)) # If sampling probabilities
     flat_action_idx = jnp.argmax(flat_action_probs, axis=-1) # Deterministic
 
-    chosen_ems_idx, chosen_item_idx = flat_action_idx // NUM_ITEM_CHOICES, flat_action_idx % NUM_ITEM_CHOICES
-    env_action = jnp.array([chosen_ems_idx, chosen_item_idx], dtype=jnp.int32)
+    # NEW: Action construction depends on the environment type
+    if is_extended_env_with_rotation:
+        # Unpack for 3-component action: (orientation, ems, item)
+        # flat_action_probs are for a grid of (ems, item_with_orientation)
+        chosen_ems_idx = flat_action_idx // TOTAL_ITEM_CHOICES
+        chosen_item_and_orientation_idx = flat_action_idx % TOTAL_ITEM_CHOICES
+        
+        # Decompose the item_with_orientation index
+        orientation_idx = chosen_item_and_orientation_idx // NUM_ITEMS_PER_ORIENTATION
+        item_idx = chosen_item_and_orientation_idx % NUM_ITEMS_PER_ORIENTATION
+
+        env_action = jnp.array([orientation_idx, chosen_ems_idx, item_idx], dtype=jnp.int32)
+    else:
+        # Original logic for 2-component action: (ems, item)
+        chosen_ems_idx = flat_action_idx // TOTAL_ITEM_CHOICES
+        chosen_item_idx = flat_action_idx % TOTAL_ITEM_CHOICES
+        env_action = jnp.array([chosen_ems_idx, chosen_item_idx], dtype=jnp.int32)
+        
     next_env_state, next_timestep = env.step(env_state, env_action)
     transition = QDTransition(
         obs=timestep.observation, next_obs=next_timestep.observation, rewards=next_timestep.reward,
@@ -143,8 +174,9 @@ if descriptor_type != "genome":
     print("Using binpack_descriptor_extraction for QDax scoring function")
 
     ## Descriptor extraction & Scoring for QDax
+    # The descriptor function now needs the total number of item choices
     descriptor_extraction_fn = functools.partial(binpack_descriptor_extraction, 
-                                                num_item_choices_from_spec=NUM_ITEM_CHOICES)
+                                                num_item_choices_from_spec=TOTAL_ITEM_CHOICES)
     # The scoring_fn_dist is already set up to take policy_params (which will be {'genome': ...})
     scoring_fn_dist_qdax = functools.partial(
         jumanji_scoring_function_eval_multiple_envs, 
@@ -189,17 +221,6 @@ else:
 
 ## Emitter & Algorithm for QDax
 variation_fn = functools.partial(isoline_variation, iso_sigma=iso_sigma, line_sigma=line_sigma)
-# The emitter will operate on the 'genome' part of the PyTree if variation_fn is PyTree-aware.
-# Standard isoline_variation expects flat arrays. We need to adapt how emitter gets genotypes.
-# For now, assume MixingEmitter can handle PyTrees if variation_fn can, or QDax handles it.
-# A common pattern is to have the emitter work on a specific leaf of the genotype PyTree.
-# If isoline_variation needs flat arrays, the emitter or a wrapper would handle extracting/reinserting.
-# Let's assume for now QDax + MixingEmitter handles PyTree genotypes where variation_fn acts on leaves.
-# Or, more robustly, make the emitter target the 'genome' leaf.
-# This might require a custom emitter or a small wrapper around MixingEmitter.
-# For simplicity now, let's proceed, but this is a common detail.
-# If errors occur here, one solution is to make the genotype *just* the flat genome array,
-# and have the policy_network.apply in play_step_fn expect that directly.
 mixing_emitter = MixingEmitter(
     mutation_fn=None, variation_fn=variation_fn, variation_percentage=1.0,
     batch_size=qdax_batch_size_per_device # This is per device for DistributedMAPElites
@@ -301,7 +322,7 @@ for essential_key in ["qd_score", "max_fitness", "coverage"]:
         if expected_metric_array_len_qdax > 0: metrics_for_plot_filtered_qdax[essential_key] = jnp.zeros(expected_metric_array_len_qdax)
 
 if expected_metric_array_len_qdax > 0 and \
-   all(k in metrics_for_plot_filtered_qdax for k in ["qd_score", "max_fitness", "coverage"]):
+    all(k in metrics_for_plot_filtered_qdax for k in ["qd_score", "max_fitness", "coverage"]):
     fig, axes = plot_map_elites_results(
         env_steps=plot_x_axis_iterations_qdax,
         metrics=metrics_for_plot_filtered_qdax,

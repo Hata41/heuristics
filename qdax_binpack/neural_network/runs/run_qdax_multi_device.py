@@ -1,3 +1,10 @@
+
+import os
+
+os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=16"
+
+
+
 import jumanji
 from typing import Tuple, Type, Dict, Any, List # Added List
 
@@ -55,19 +62,34 @@ seed = 0
 episode_length = 20
 batch_size_per_device = 1
 total_batch_size = batch_size_per_device * num_devices
-num_total_iterations = 2000 # Target total algorithm iterations
+num_total_iterations = 100 # Target total algorithm iterations
 log_period = 1 # Iterations per compiled update_fn call
 num_update_calls = num_total_iterations // log_period # Number of times pmapped update_fn is called
 iso_sigma = 0.005
 line_sigma = 0.05
-N_EVAL_ENVS = 50
+N_EVAL_ENVS = 1
 
 ## Instantiate the Jumanji environment & Policy
-env = jumanji.make('BinPack-v2')
+# env = jumanji.make('BinPack-v2')
+env = jumanji.make('Extended_BinPack-v0') # Use the extended environment
+
 key = jax.random.key(seed)
 key, subkey = jax.random.split(key)
 action_spec_val = env.action_spec()
-NUM_ITEM_CHOICES = action_spec_val.num_values[1].item()
+
+# NEW: Handle different action spaces between BinPack-v2 and Extended_BinPack-v0
+is_extended_env_with_rotation = len(action_spec_val.num_values) == 3
+
+if is_extended_env_with_rotation:
+    print(f"Running with Extended_BinPack-v0 (with rotations). Action spec: {action_spec_val.num_values}")
+    NUM_ORIENTATIONS = action_spec_val.num_values[0].item()
+    NUM_ITEMS_PER_ORIENTATION = action_spec_val.num_values[2].item()
+    # The total number of "item" choices for the policy's flattened output
+    TOTAL_ITEM_CHOICES = NUM_ORIENTATIONS * NUM_ITEMS_PER_ORIENTATION
+else:
+    print(f"Running with BinPack-v2 or Extended_BinPack-v0 (no rotations). Action spec: {action_spec_val.num_values}")
+    TOTAL_ITEM_CHOICES = action_spec_val.num_values[1].item()
+
 transformer_num_heads, num_transformer_layers, qkv_features = 1, 1, 2
 attention_kwargs = dict(num_heads=transformer_num_heads, qkv_features=qkv_features, kernel_init=nn.initializers.ones, bias_init=nn.initializers.zeros)
 policy_network = BinPackActor(torso=BinPackTorso(num_transformer_layers=num_transformer_layers, attention_kwargs=attention_kwargs), input_layer=Obs_to_Arrays(), action_head=BPActorHead())
@@ -77,8 +99,23 @@ def play_step_fn(env_state, timestep, policy_params, key):
     network_input = timestep.observation
     proba_action_flat = policy_network.apply(policy_params, network_input)
     flat_action_idx = jnp.argmax(proba_action_flat, axis=-1)
-    chosen_ems_idx, chosen_item_idx = flat_action_idx // NUM_ITEM_CHOICES, flat_action_idx % NUM_ITEM_CHOICES
-    env_action = jnp.array([chosen_ems_idx, chosen_item_idx], dtype=jnp.int32)
+
+    # NEW: Action construction depends on the environment type
+    if is_extended_env_with_rotation:
+        # Unpack for 3-component action: (orientation, ems, item)
+        chosen_ems_idx = flat_action_idx // TOTAL_ITEM_CHOICES
+        chosen_item_and_orientation_idx = flat_action_idx % TOTAL_ITEM_CHOICES
+        
+        orientation_idx = chosen_item_and_orientation_idx // NUM_ITEMS_PER_ORIENTATION
+        item_idx = chosen_item_and_orientation_idx % NUM_ITEMS_PER_ORIENTATION
+
+        env_action = jnp.array([orientation_idx, chosen_ems_idx, item_idx], dtype=jnp.int32)
+    else:
+        # Original logic for 2-component action: (ems, item)
+        chosen_ems_idx = flat_action_idx // TOTAL_ITEM_CHOICES
+        chosen_item_idx = flat_action_idx % TOTAL_ITEM_CHOICES
+        env_action = jnp.array([chosen_ems_idx, chosen_item_idx], dtype=jnp.int32)
+        
     next_env_state, next_timestep = env.step(env_state, env_action)
     transition = QDTransition(
         obs=timestep.observation, next_obs=next_timestep.observation, rewards=next_timestep.reward,
@@ -98,7 +135,8 @@ init_variables_flat = jax.vmap(policy_network.init, in_axes=(0, None))(populatio
 init_variables = jax.tree_util.tree_map(lambda x: jnp.reshape(x, (num_devices, batch_size_per_device) + x.shape[1:]), init_variables_flat)
 
 ## Descriptor extraction & Scoring
-descriptor_extraction_fn = functools.partial(binpack_descriptor_extraction, num_item_choices_from_spec=NUM_ITEM_CHOICES)
+# The descriptor function now needs the total number of item choices
+descriptor_extraction_fn = functools.partial(binpack_descriptor_extraction, num_item_choices_from_spec=TOTAL_ITEM_CHOICES)
 scoring_fn_dist = functools.partial(
     jumanji_scoring_function_eval_multiple_envs, env=env, n_eval_envs=N_EVAL_ENVS,
     episode_length=episode_length, play_step_fn=play_step_fn, descriptor_extractor=descriptor_extraction_fn,
@@ -138,9 +176,6 @@ for metric_key, metric_values_all_devices in init_metrics_per_device.items():
     logged_init_metrics[metric_key] = value_from_first_device
     if metric_key in all_metrics:
         all_metrics[metric_key].append(value_from_first_device)
-    # else: # If a new metric key appears that wasn't pre-defined in all_metrics
-    #     all_metrics[metric_key] = [value_from_first_device]
-
 
 csv_logger = CSVLogger("distributed_mapelites_binpack_logs.csv", header=list(logged_init_metrics.keys()) + ["num_evaluations"]) # Adjusted header
 if "num_evaluations" not in logged_init_metrics: logged_init_metrics["num_evaluations"] = total_batch_size * N_EVAL_ENVS # Evals for init
@@ -173,12 +208,9 @@ for i in tqdm(range(num_update_calls), desc="QD Training Progress"):
     logged_metrics_csv = {"time": timelapse, "loop": i + 1, "iteration": current_qd_iteration, "num_evaluations": actual_evals_done_total}
     
     for metric_key, value_array_log_period in current_metrics_first_device.items():
-        # value_array_log_period has shape (log_period, ...)
         logged_metrics_csv[metric_key] = value_array_log_period[-1] if value_array_log_period.ndim > 0 and len(value_array_log_period) > 0 else value_array_log_period
         if metric_key in all_metrics:
             all_metrics[metric_key].extend(list(value_array_log_period))
-        # else: # Handle new metric keys if necessary
-        #     all_metrics[metric_key] = list(value_array_log_period)
             
     csv_logger.log(logged_metrics_csv)
 
@@ -198,21 +230,9 @@ from qdax.utils.plotting import plot_map_elites_results
 from matplotlib.pyplot import savefig
 os.makedirs("qdax_binpack_distributed", exist_ok=True)
 
-# Generate x-axis for plotting: iterations [0, 1, 2, ..., actual_iterations_run]
 actual_iterations_run = num_update_calls * log_period
-# The number of data points for each metric is 1 (init) + actual_iterations_run
 plot_x_axis_iterations = jnp.arange(0, actual_iterations_run + 1)
 expected_metric_array_len = 1 + actual_iterations_run
-
-# Alternative X-axis: Number of evaluations
-# initial_evals = total_batch_size * N_EVAL_ENVS # Evals during init phase
-# evals_per_qd_iter_step = total_batch_size * N_EVAL_ENVS # Evals per main algorithm iteration
-# plot_x_axis_evals = jnp.concatenate([
-#     jnp.array([initial_evals]), # Assuming init evals count for the 0th iteration point
-#     initial_evals + (jnp.arange(1, actual_iterations_run + 1) * evals_per_qd_iter_step)
-# ])
-# Use iteration axis for now, as it's simpler to align with metric collection.
-# If you want evaluations, ensure all_metrics contains a reliable 'num_evaluations' series.
 
 metrics_for_plot_filtered = {}
 for k, v_array in all_metrics.items():
@@ -223,23 +243,22 @@ for k, v_array in all_metrics.items():
     else:
         print(f"Plotting Warning: Metric '{k}' length {len(v_array) if hasattr(v_array, '__len__') else 'scalar'} != expected {expected_metric_array_len}. Skipping.")
 
-# Fallback for essential plotting metrics if they got filtered out
 for essential_key in ["qd_score", "max_fitness", "coverage"]:
     if essential_key not in metrics_for_plot_filtered:
         print(f"Warning: Essential metric '{essential_key}' missing or mismatched for plotting. Plot may be incomplete or use zeros.")
-        if expected_metric_array_len > 0 : # Only add zeros if there's an axis to plot against
+        if expected_metric_array_len > 0 :
              metrics_for_plot_filtered[essential_key] = jnp.zeros(expected_metric_array_len)
 
 
 if expected_metric_array_len > 0 and \
    all(k in metrics_for_plot_filtered for k in ["qd_score", "max_fitness", "coverage"]):
     fig, axes = plot_map_elites_results(
-        env_steps=plot_x_axis_iterations, # Using iteration number as x-axis
+        env_steps=plot_x_axis_iterations,
         metrics=metrics_for_plot_filtered,
         repertoire=final_repertoire,
         min_descriptor=0.0,
         max_descriptor=1.0,
-        x_label="QD Algorithm Iterations (0 = init)" # Updated x-label
+        x_label="QD Algorithm Iterations (0 = init)"
     )
     plot_filename = "qdax_binpack_distributed/repertoire_plot_distributed.png"
     savefig(plot_filename)
