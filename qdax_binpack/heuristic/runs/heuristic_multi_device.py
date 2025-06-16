@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=16"
 
@@ -17,6 +18,7 @@ from qdax.core.emitters.mutation_operators import isoline_variation
 from qdax.core.emitters.standard_emitters import MixingEmitter
 from qdax.custom_types import ExtraScores, Fitness, RNGKey, Descriptor, Genotype
 from qdax.utils.metrics import default_qd_metrics, CSVLogger
+from qdax_binpack.heuristic.utils.save_load import save_repertoire
 
 """New"""
 from flax import linen as nn
@@ -56,23 +58,24 @@ print(f'Detected the following {num_devices} device(s): {devices}')
 
 # Choose Descriptors : 
 
-# descriptor_type = "genome"
-descriptor_type = "proritization"
+descriptor_type = "genome"
+# descriptor_type = "proritization"
 
 
 ## Define Hyperparameters
 seed = 0
 episode_length = 20 # Max steps for a full episode
 # For QDax loop (can be different from single episode test)
-qdax_batch_size_per_device = 2 # QDax emitter batch size per device
+qdax_batch_size_per_device = 2# QDax emitter batch size per device
 qdax_total_batch_size = qdax_batch_size_per_device * num_devices
-num_total_iterations = 10 # Target total algorithm iterations for QDax
+num_total_iterations = 100 # Target total algorithm iterations for QDax
 log_period = 1 # Iterations per compiled update_fn call
 num_update_calls = num_total_iterations // log_period
 
 iso_sigma = 0.005 # For QDax emitter
 line_sigma = 0.05  # For QDax emitter
-N_EVAL_ENVS = 2   # For QDax scoring function
+N_EVAL_ENVS = 10   # For QDax scoring function
+repertoire_size = 20
 
 ## Instantiate the Extended Jumanji environment 
 env = jumanji.make('Extended_BinPack-v0')
@@ -222,13 +225,14 @@ else:
 
         # Descriptor 1: "Item Priority" - How to prioritize items intrinsically?
         # Includes item volume, dimensions, and flatness.
-        slice(7, 11), 
+        # slice(7, 11), 
 
         # Descriptor 2: "EMS Stability Priority" - How to prioritize EMSs for stability?
         # Includes EMS volume, dimensions, and features related to full-support.
         slice(11, 16) 
     ]
-    NUM_DESCRIPTORS = len(DESCRIPTOR_SLICES)        
+    NUM_DESCRIPTORS = len(DESCRIPTOR_SLICES) 
+    print(f"Using {NUM_DESCRIPTORS} genome-based descriptors with slices: {DESCRIPTOR_SLICES}")       
     
     print("Using genome based descriptors for QDax scoring function")
 
@@ -280,7 +284,8 @@ algo_instance = DistributedMAPElites(
 
 ## Centroids & Distributed Init for QDax
 key, cvt_key = jax.random.split(key)
-centroids = compute_cvt_centroids(num_descriptors=NUM_DESCRIPTORS, num_init_cvt_samples=10000, num_centroids=64, minval=0.0, maxval=1.0, key=cvt_key)
+print(f"Computing CVT centroids for QDax with {NUM_DESCRIPTORS} descriptors.")
+centroids = compute_cvt_centroids(num_descriptors=NUM_DESCRIPTORS, num_init_cvt_samples=10000, num_centroids=repertoire_size, minval=0.0, maxval=1.0, key=cvt_key)
 key, init_keys_subkey = jax.random.split(key)
 distributed_init_keys = jax.random.split(init_keys_subkey, num=num_devices)
 distributed_init_keys = jnp.stack(distributed_init_keys)
@@ -380,3 +385,16 @@ if expected_metric_array_len_qdax > 0 and \
     print(f"QDax Plot saved to {plot_filename}")
 else:
     print("Skipping QDax plotting due to missing essential metrics or zero iterations run.")
+    
+
+final_repertoire_to_save = jax.tree_util.tree_map(lambda x: x[0], repertoire)
+
+# Define the path for saving the repertoire
+save_path = Path("results/my_experiment/final_repertoire.pkl")
+
+# Create the directory if it doesn't exist
+save_path.parent.mkdir(parents=True, exist_ok=True)
+
+print(f"\n--- Saving final repertoire to {save_path} ---")
+save_repertoire(final_repertoire_to_save, save_path)
+print("Repertoire saving complete.")
