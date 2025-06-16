@@ -13,6 +13,8 @@ from typing import Sequence, Tuple, Union, Optional
 from qdax.custom_types import Descriptor, Genotype
 from qdax.core.neuroevolution.buffers.buffer import QDTransition
 
+from typing import List
+
 
 def _calculate_normalized_rank(chosen_value: chex.Numeric,
                                all_values: chex.Array,
@@ -118,45 +120,54 @@ def binpack_descriptor_extraction( # Original name and signature restored
     descriptors = jnp.stack([mean_item_prioritization, mean_ems_prioritization], axis=-1)
     return descriptors
 
-# --- NEW: Descriptor Function for Heuristic Genomes (Unchanged) ---
-# ... (The rest of the file is unchanged)
-# Based on the new feature_stack order in `heuristic_policies.py` (13 features total)
-# Interaction features: indices 0-4
-# Item features: indices 5-7
-# EMS features: indices 8-12
-
-ITEM_FEATURE_GENOME_INDICES_SLICE = slice(5, 8)  # Corresponds to item_vol, item_max_dim, item_min_dim weights
-EMS_FEATURE_GENOME_INDICES_SLICE = slice(8, 13)   # Corresponds to ems_vol, ems_x1,y1,z1, ems_min_dim weights
-
 def compute_heuristic_genome_descriptors(
     policy_params: Genotype,
+    descriptor_slices: List[slice],
 ) -> Descriptor:
     """
-    Computes descriptors based on the L1 norm of heuristic genome components.
-    The policy_params (genotypes) are expected to be a PyTree containing
-    a 'genome' leaf, which is an array of shape (batch_size, genome_length).
-    genome_length should be NUM_EXPANDED_HEURISTIC_FEATURES (13).
+    Computes descriptors based on the L1 norm of specified heuristic genome components.
+
+    This function is a generalized version that accepts a list of slices. Each slice
+    defines a group of features in the genome. For each group, it calculates the
+    normalized L1 norm of the corresponding weights, creating one descriptor per slice.
+
+    Args:
+        policy_params: The genotypes, a PyTree expected to contain a 'genome' leaf
+            of shape (batch_size, genome_length).
+        descriptor_slices: A list of slice objects. The length of this list determines
+            the number of descriptors. Each slice specifies the indices of the genome
+            weights that contribute to that descriptor.
+
+    Returns:
+        A descriptor array of shape (batch_size, num_descriptors), where
+        num_descriptors is len(descriptor_slices). Each descriptor value is
+        clipped to the range [0.0, 1.0].
     """
     actual_genomes = policy_params['genome']
     
-    item_feature_weights = actual_genomes[:, ITEM_FEATURE_GENOME_INDICES_SLICE]
-    desc1_item_l1_norm = jnp.sum(jnp.abs(item_feature_weights), axis=-1)
+    all_descriptors = []
 
-    ems_feature_weights = actual_genomes[:, EMS_FEATURE_GENOME_INDICES_SLICE]
-    desc2_ems_l1_norm = jnp.sum(jnp.abs(ems_feature_weights), axis=-1)
+    # Iterate over the list of slices provided
+    for feature_slice in descriptor_slices:
+        # 1. Extract the weights for the current feature group
+        feature_weights = actual_genomes[:, feature_slice]
 
-    num_item_weights = ITEM_FEATURE_GENOME_INDICES_SLICE.stop - ITEM_FEATURE_GENOME_INDICES_SLICE.start
-    max_l1_item = 1.0 * num_item_weights
+        # 2. Calculate the L1 norm for this group
+        l1_norm = jnp.sum(jnp.abs(feature_weights), axis=-1)
 
-    num_ems_weights = EMS_FEATURE_GENOME_INDICES_SLICE.stop - EMS_FEATURE_GENOME_INDICES_SLICE.start
-    max_l1_ems = 1.0 * num_ems_weights
-    
-    normalized_desc1 = desc1_item_l1_norm / jnp.maximum(max_l1_item, 1e-6)
-    normalized_desc2 = desc2_ems_l1_norm / jnp.maximum(max_l1_ems, 1e-6)
-    
-    final_descriptors = jnp.stack([
-        jnp.clip(normalized_desc1, 0.0, 1.0),
-        jnp.clip(normalized_desc2, 0.0, 1.0)
-    ], axis=-1)
+        # 3. Calculate the maximum possible L1 norm for normalization
+        # Assumes weights are in [-1, 1], so max absolute value is 1.0
+        num_weights_in_group = feature_slice.stop - feature_slice.start
+        max_l1_for_group = 1.0 * num_weights_in_group
+
+        # 4. Normalize the descriptor
+        normalized_desc = l1_norm / jnp.maximum(max_l1_for_group, 1e-6)
+
+        # 5. Clip the result and add to our list
+        clipped_desc = jnp.clip(normalized_desc, 0.0, 1.0)
+        all_descriptors.append(clipped_desc)
+
+    # Stack all computed descriptors into a final array
+    final_descriptors = jnp.stack(all_descriptors, axis=-1)
 
     return final_descriptors

@@ -64,15 +64,15 @@ descriptor_type = "proritization"
 seed = 0
 episode_length = 20 # Max steps for a full episode
 # For QDax loop (can be different from single episode test)
-qdax_batch_size_per_device = 1 # QDax emitter batch size per device
+qdax_batch_size_per_device = 2 # QDax emitter batch size per device
 qdax_total_batch_size = qdax_batch_size_per_device * num_devices
-num_total_iterations = 1000 # Target total algorithm iterations for QDax
+num_total_iterations = 10 # Target total algorithm iterations for QDax
 log_period = 1 # Iterations per compiled update_fn call
 num_update_calls = num_total_iterations // log_period
 
 iso_sigma = 0.005 # For QDax emitter
 line_sigma = 0.05  # For QDax emitter
-N_EVAL_ENVS = 10   # For QDax scoring function
+N_EVAL_ENVS = 2   # For QDax scoring function
 
 ## Instantiate the Extended Jumanji environment 
 env = jumanji.make('Extended_BinPack-v0')
@@ -171,6 +171,9 @@ print(f"Shape of initial heuristic genomes for QDax (e.g., 'genome' leaf): {jax.
 
 
 if descriptor_type != "genome":
+    
+    NUM_DESCRIPTORS = 2
+    
     print("Using binpack_descriptor_extraction for QDax scoring function")
 
     ## Descriptor extraction & Scoring for QDax
@@ -193,12 +196,47 @@ if descriptor_type != "genome":
         return fitnesses.reshape(-1, 1), descriptors, extra_scores
 
 else:
+    
+    # --- Feature Indices for HeuristicPolicy ---
+    # 0: delta_x
+    # 1: delta_y
+    # 2: delta_z
+    # 3: vol_diff
+    # 4: can_fit
+    # 5: alignment_score
+    # 6: wasted_vol_ratio
+    # 7: item_vol
+    # 8: item_max_dim
+    # 9: item_min_dim
+    # 10: item_flatness_ratio
+    # 11: ems_vol
+    # 12: ems_min_dim
+    # 13: ems_z1 (height)
+    # 14: ems_contact_area
+    # 15: is_on_floor
+
+    DESCRIPTOR_SLICES = [
+        # Descriptor 0: "Fit & Alignment" - How well does an item fit geometrically?
+        # Includes deltas, volume difference, fit check, alignment, and wasted space.
+        slice(0, 7),  
+
+        # Descriptor 1: "Item Priority" - How to prioritize items intrinsically?
+        # Includes item volume, dimensions, and flatness.
+        slice(7, 11), 
+
+        # Descriptor 2: "EMS Stability Priority" - How to prioritize EMSs for stability?
+        # Includes EMS volume, dimensions, and features related to full-support.
+        slice(11, 16) 
+    ]
+    NUM_DESCRIPTORS = len(DESCRIPTOR_SLICES)        
+    
     print("Using genome based descriptors for QDax scoring function")
 
-    ##### Genome based descriptors
+    # This part remains the same
     def dummy_episode_descriptor_extractor(transitions, mask):
         batch_size = jax.tree_leaves(transitions)[0].shape[0]
-        return jnp.zeros((batch_size, 2)) # Return dummy shape
+        # IMPORTANT: The dummy shape must match your new number of descriptors
+        return jnp.zeros((batch_size, NUM_DESCRIPTORS))
 
     scoring_fn_dist_qdax = functools.partial(
         jumanji_scoring_function_eval_multiple_envs,
@@ -206,15 +244,21 @@ else:
         n_eval_envs=N_EVAL_ENVS,
         episode_length=episode_length,
         play_step_fn=play_step_fn,
-        descriptor_extractor=dummy_episode_descriptor_extractor, # THIS IS IMPORTANT
+        descriptor_extractor=dummy_episode_descriptor_extractor,
+    )
+
+    # --- NEW: Create the genome descriptor function using functools.partial ---
+    genome_descriptor_fn = functools.partial(
+        compute_heuristic_genome_descriptors,
+        descriptor_slices=DESCRIPTOR_SLICES
     )
 
     def wrapped_scoring_fn_qdax(genotypes: Genotype, key: RNGKey) -> Tuple[Fitness, Descriptor, ExtraScores]:
-        # 1. Get fitnesses (descriptors from dummy_episode_descriptor_extractor are ignored)
+        # 1. Get fitnesses (dummy descriptors are ignored)
         fitnesses, _ignored_episode_descriptors, extra_scores = scoring_fn_dist_qdax(genotypes, key)
         
-        # 2. Compute descriptors based on the genome
-        genome_based_descriptors = compute_heuristic_genome_descriptors(genotypes) # Pass the PyTree genotypes
+        # 2. Compute descriptors based on the genome using our new partial function
+        genome_based_descriptors = genome_descriptor_fn(genotypes)
         
         return fitnesses.reshape(-1, 1), genome_based_descriptors, extra_scores
 
@@ -236,7 +280,7 @@ algo_instance = DistributedMAPElites(
 
 ## Centroids & Distributed Init for QDax
 key, cvt_key = jax.random.split(key)
-centroids = compute_cvt_centroids(num_descriptors=2, num_init_cvt_samples=10000, num_centroids=64, minval=0.0, maxval=1.0, key=cvt_key)
+centroids = compute_cvt_centroids(num_descriptors=NUM_DESCRIPTORS, num_init_cvt_samples=10000, num_centroids=64, minval=0.0, maxval=1.0, key=cvt_key)
 key, init_keys_subkey = jax.random.split(key)
 distributed_init_keys = jax.random.split(init_keys_subkey, num=num_devices)
 distributed_init_keys = jnp.stack(distributed_init_keys)
