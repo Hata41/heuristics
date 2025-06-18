@@ -1,3 +1,6 @@
 qdax ##--constraint https://raw.githubusercontent.com/adaptive-intelligent-robotics/QDax/main/requirements.txt
 ipykernel
 tqdm
+colorama
+pandas
+setuptools # for pkg_resources bug
